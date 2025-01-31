@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 """media.py unit tests that are common to st.audio + st.video"""
 
 from enum import Enum
+from pathlib import Path
 from unittest import mock
 
 from parameterized import parameterized
@@ -26,7 +27,7 @@ from streamlit.proto.RootContainer_pb2 import RootContainer
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
 
 
-class TestMediaKind(Enum):
+class MockMediaKind(Enum):
     AUDIO = "audio"
     VIDEO = "video"
 
@@ -34,21 +35,25 @@ class TestMediaKind(Enum):
 class MediaTest(DeltaGeneratorTestCase):
     @parameterized.expand(
         [
-            ("foo.wav", "audio/wav", TestMediaKind.AUDIO, False),
-            ("path/to/foo.wav", "audio/wav", TestMediaKind.AUDIO, False),
-            (b"fake_audio_data", "audio/wav", TestMediaKind.AUDIO, False),
-            ("https://foo.com/foo.wav", "audio/wav", TestMediaKind.AUDIO, True),
-            ("foo.mp4", "video/mp4", TestMediaKind.VIDEO, False),
-            ("path/to/foo.mp4", "video/mp4", TestMediaKind.VIDEO, False),
-            (b"fake_video_data", "video/mp4", TestMediaKind.VIDEO, False),
-            ("https://foo.com/foo.mp4", "video/mp4", TestMediaKind.VIDEO, True),
+            ("foo.wav", "audio/wav", MockMediaKind.AUDIO, False),
+            (Path("foo.wav"), "audio/wav", MockMediaKind.AUDIO, False),
+            ("path/to/foo.wav", "audio/wav", MockMediaKind.AUDIO, False),
+            (Path("path/to/foo.wav"), "audio/wav", MockMediaKind.AUDIO, False),
+            (b"fake_audio_data", "audio/wav", MockMediaKind.AUDIO, False),
+            ("https://foo.com/foo.wav", "audio/wav", MockMediaKind.AUDIO, True),
+            ("foo.mp4", "video/mp4", MockMediaKind.VIDEO, False),
+            (Path("foo.mp4"), "video/mp4", MockMediaKind.VIDEO, False),
+            ("path/to/foo.mp4", "video/mp4", MockMediaKind.VIDEO, False),
+            (Path("path/to/foo.mp4"), "video/mp4", MockMediaKind.VIDEO, False),
+            (b"fake_video_data", "video/mp4", MockMediaKind.VIDEO, False),
+            ("https://foo.com/foo.mp4", "video/mp4", MockMediaKind.VIDEO, True),
         ]
     )
     def test_add_bytes_and_filenames_to_mediafilemanager(
         self,
         media_data: MediaData,
         mimetype: str,
-        media_kind: TestMediaKind,
+        media_kind: MockMediaKind,
         is_url: bool,
     ):
         """st.audio + st.video should register bytes and filenames with the
@@ -59,7 +64,7 @@ class MediaTest(DeltaGeneratorTestCase):
         ) as mock_mfm_add, mock.patch("streamlit.runtime.caching.save_media_data"):
             mock_mfm_add.return_value = "https://mockoutputurl.com"
 
-            if media_kind is TestMediaKind.AUDIO:
+            if media_kind is MockMediaKind.AUDIO:
                 st.audio(media_data, mimetype)
                 element = self.get_delta_from_queue().new_element
                 element_url = element.audio.url
@@ -74,10 +79,13 @@ class MediaTest(DeltaGeneratorTestCase):
                 self.assertEqual(media_data, element_url)
                 mock_mfm_add.assert_not_called()
             else:
-                # Other strings, and audio data, should be passed to
+                # Other strings, Path objects, and audio/video data, should be passed to
                 # MediaFileManager.add
+                expected_media_data = (
+                    str(media_data) if isinstance(media_data, Path) else media_data
+                )
                 mock_mfm_add.assert_called_once_with(
-                    media_data,
+                    expected_media_data,
                     mimetype,
                     str(make_delta_path(RootContainer.MAIN, (), 0)),
                 )

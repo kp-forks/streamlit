@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,30 +13,30 @@
 # limitations under the License.
 
 """Utility functions to use in our tests."""
-import json
-import sys
+
+from __future__ import annotations
+
+import os
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Dict
-from unittest.mock import patch
+from typing import TYPE_CHECKING
 
 from streamlit import config
+from streamlit.runtime.fragment import MemoryFragmentStorage
+from streamlit.runtime.memory_uploaded_file_manager import MemoryUploadedFileManager
+from streamlit.runtime.pages_manager import PagesManager
 from streamlit.runtime.scriptrunner import ScriptRunContext
 from streamlit.runtime.state import SafeSessionState, SessionState
-from streamlit.runtime.uploaded_file_manager import UploadedFileManager
-from tests.constants import SNOWFLAKE_CREDENTIAL_FILE
+
+# Reexport functions that were moved to main codebase
+from streamlit.testing.v1.util import (
+    build_mock_config_get_option as build_mock_config_get_option,  # noqa: PLC0414
+)
+from streamlit.testing.v1.util import (
+    patch_config_options as patch_config_options,  # noqa: PLC0414
+)
 
 if TYPE_CHECKING:
     from snowflake.snowpark import Session
-
-
-def should_skip_pyspark_tests() -> bool:
-    """Disable pyspark unit tests in Python 3.11.
-    Pyspark is not compatible with Python 3.11 as of 2023.01.12, and results in test failures.
-    (Please remove this when pyspark is compatible!)
-    """
-    # See: https://pyreadiness.org/3.11/
-    # See: https://stackoverflow.com/questions/74579273/indexerror-tuple-index-out-of-range-when-creating-pyspark-dataframe
-    return sys.version_info >= (3, 11, 0)
 
 
 def create_mock_script_run_ctx() -> ScriptRunContext:
@@ -45,41 +45,13 @@ def create_mock_script_run_ctx() -> ScriptRunContext:
         session_id="mock_session_id",
         _enqueue=lambda msg: None,
         query_string="mock_query_string",
-        session_state=SafeSessionState(SessionState()),
-        uploaded_file_mgr=UploadedFileManager(),
-        page_script_hash="mock_page_script_hash",
-        user_info={"email": "mock@test.com"},
+        session_state=SafeSessionState(SessionState(), lambda: None),
+        uploaded_file_mgr=MemoryUploadedFileManager("/mock/upload"),
+        main_script_path="",
+        user_info={"email": "mock@example.com"},
+        fragment_storage=MemoryFragmentStorage(),
+        pages_manager=PagesManager(""),
     )
-
-
-@contextmanager
-def patch_config_options(config_overrides: Dict[str, Any]):
-    """A context manager that overrides config options. It can
-    also be used as a function decorator.
-
-    Examples:
-    >>> with patch_config_options({"server.headless": True}):
-    ...     assert(config.get_option("server.headless") is True)
-    ...     # Other test code that relies on these options
-
-    >>> @patch_config_options({"server.headless": True})
-    ... def test_my_thing():
-    ...   assert(config.get_option("server.headless") is True)
-    """
-    mock_get_option = build_mock_config_get_option(config_overrides)
-    with patch.object(config, "get_option", new=mock_get_option):
-        yield
-
-
-def build_mock_config_get_option(overrides_dict):
-    orig_get_option = config.get_option
-
-    def mock_config_get_option(name):
-        if name in overrides_dict:
-            return overrides_dict[name]
-        return orig_get_option(name)
-
-    return mock_config_get_option
 
 
 def build_mock_config_is_manually_set(overrides_dict):
@@ -128,11 +100,20 @@ def normalize_md(txt: str) -> str:
 
 
 @contextmanager
-def create_snowpark_session() -> "Session":
+def create_snowpark_session() -> Session:
     from snowflake.snowpark import Session
 
-    credential = json.loads(SNOWFLAKE_CREDENTIAL_FILE.read_text())
-    session = Session.builder.configs(credential).create()
+    session = Session.builder.configs(
+        {
+            "account": os.environ.get("SNOWFLAKE_ACCOUNT"),
+            "user": "test_streamlit",
+            "password": os.environ.get("SNOWFLAKE_PASSWORD"),
+            "role": "testrole_streamlit",
+            "warehouse": "testwh_streamlit",
+            "database": "testdb_streamlit",
+            "schema": "testschema_streamlit",
+        }
+    ).create()
     try:
         yield session
     finally:

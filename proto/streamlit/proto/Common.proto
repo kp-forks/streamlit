@@ -1,5 +1,5 @@
 /**!
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,9 @@
  */
 
 syntax = "proto3";
+
+option java_package = "com.snowflake.apps.streamlit";
+option java_outer_classname = "CommonProto";
 
 // Message types that are common to multiple protobufs.
 
@@ -42,17 +45,59 @@ message UInt32Array {
   repeated uint32 data = 1;
 }
 
+message StringTriggerValue {
+  optional string data = 1;
+}
+
+// NOTE: The FileURLsRequest, FileURLs, and FileURLsResponse message types
+// must remain stable as some external services rely on them to support
+// `st.file_uploader`. These types aren't completely set in stone, but changing
+// them requires a good amount of effort so should be avoided if possible.
+message FileURLsRequest {
+  string request_id = 1;
+  repeated string file_names = 2;
+  string session_id = 3;
+}
+
+message FileURLs {
+  string file_id = 1;
+  string upload_url = 2;
+  string delete_url = 3;
+}
+
+message FileURLsResponse {
+  string response_id = 1;
+  repeated FileURLs file_urls = 2;
+  string error_msg = 3;
+}
+
 // Information on a file uploaded via the file_uploader widget.
 message UploadedFileInfo {
+  // DEPRECATED.
   sint64 id = 1;
 
   string name = 2;
 
   // The size of this file in bytes.
-  uint32 size = 3;
+  uint64 size = 3;
+
+  // ID that can be used to retrieve a file.
+  string file_id = 4;
+
+  // Metadata containing information about file_urls.
+  FileURLs file_urls = 5;
 }
 
 message FileUploaderState {
+  // DEPRECATED
   sint64 max_file_id = 1;
+
   repeated UploadedFileInfo uploaded_file_info = 2;
+}
+
+
+message ChatInputValue {
+  optional string data = 1;
+  optional FileUploaderState file_uploader_state = 2;
+
 }

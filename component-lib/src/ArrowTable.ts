@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,14 @@
  * limitations under the License.
  */
 
-import { Table, Type, Vector } from "apache-arrow";
-import { StructRow } from "apache-arrow/vector/row";
+import {
+  tableToIPC,
+  tableFromIPC,
+  Table,
+  Type,
+  Vector,
+  StructRow,
+} from "apache-arrow";
 
 export type CellType = "blank" | "index" | "columns" | "data";
 
@@ -70,25 +76,25 @@ export class ArrowTable {
     columnsBuffer: Uint8Array,
     styler?: any
   ) {
-    this.dataTable = Table.from(dataBuffer);
-    this.indexTable = Table.from(indexBuffer);
-    this.columnsTable = Table.from(columnsBuffer);
+    this.dataTable = tableFromIPC(dataBuffer);
+    this.indexTable = tableFromIPC(indexBuffer);
+    this.columnsTable = tableFromIPC(columnsBuffer);
     this.styler = styler
       ? {
           caption: styler.caption,
-          displayValuesTable: Table.from(styler.displayValues),
+          displayValuesTable: tableFromIPC(styler.displayValues),
           styles: styler.styles,
-          uuid: styler.uuid
+          uuid: styler.uuid,
         }
       : undefined;
   }
 
   get rows(): number {
-    return this.indexTable.length + this.columnsTable.numCols;
+    return this.indexTable.numRows + this.columnsTable.numCols;
   }
 
   get columns(): number {
-    return this.indexTable.numCols + this.columnsTable.length;
+    return this.indexTable.numCols + this.columnsTable.numRows;
   }
 
   get headerRows(): number {
@@ -100,7 +106,7 @@ export class ArrowTable {
   }
 
   get dataRows(): number {
-    return this.dataTable.length;
+    return this.dataTable.numRows;
   }
 
   get dataColumns(): number {
@@ -148,34 +154,34 @@ export class ArrowTable {
       return {
         type: "blank",
         classNames: classNames.join(" "),
-        content: ""
+        content: "",
       };
     } else if (isColumnsCell) {
       const dataColumnIndex = columnIndex - this.headerColumns;
       const classNames = [
         "col_heading",
         "level" + rowIndex,
-        "col" + dataColumnIndex
+        "col" + dataColumnIndex,
       ];
 
       return {
         type: "columns",
         classNames: classNames.join(" "),
-        content: this.getContent(this.columnsTable, dataColumnIndex, rowIndex)
+        content: this.getContent(this.columnsTable, dataColumnIndex, rowIndex),
       };
     } else if (isIndexCell) {
       const dataRowIndex = rowIndex - this.headerRows;
       const classNames = [
         "row_heading",
         "level" + columnIndex,
-        "row" + dataRowIndex
+        "row" + dataRowIndex,
       ];
 
       return {
         type: "index",
         id: `T_${this.uuid}level${columnIndex}_row${dataRowIndex}`,
         classNames: classNames.join(" "),
-        content: this.getContent(this.indexTable, dataRowIndex, columnIndex)
+        content: this.getContent(this.indexTable, dataRowIndex, columnIndex),
       };
     } else {
       const dataRowIndex = rowIndex - this.headerRows;
@@ -183,7 +189,7 @@ export class ArrowTable {
       const classNames = [
         "data",
         "row" + dataRowIndex,
-        "col" + dataColumnIndex
+        "col" + dataColumnIndex,
       ];
       const content = this.styler
         ? this.getContent(
@@ -197,7 +203,7 @@ export class ArrowTable {
         type: "data",
         id: `T_${this.uuid}row${dataRowIndex}_col${dataColumnIndex}`,
         classNames: classNames.join(" "),
-        content
+        content,
       };
     }
   };
@@ -207,7 +213,7 @@ export class ArrowTable {
     rowIndex: number,
     columnIndex: number
   ): DataType => {
-    const column = table.getColumnAt(columnIndex);
+    const column = table.getChildAt(columnIndex);
     if (column === null) {
       return "";
     }
@@ -228,9 +234,9 @@ export class ArrowTable {
    */
   public serialize(): ArrowTableProto {
     return {
-      data: this.dataTable.serialize(),
-      index: this.indexTable.serialize(),
-      columns: this.columnsTable.serialize()
+      data: tableToIPC(this.dataTable),
+      index: tableToIPC(this.indexTable),
+      columns: tableToIPC(this.columnsTable),
     };
   }
 

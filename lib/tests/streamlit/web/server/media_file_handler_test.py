@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+from typing import Final
 from unittest import mock
 from unittest.mock import MagicMock
 
 import tornado.testing
 import tornado.web
 from parameterized import parameterized
-from typing_extensions import Final
 
 from streamlit.runtime.media_file_manager import MediaFileManager
 from streamlit.runtime.memory_media_file_storage import MemoryMediaFileStorage
@@ -58,10 +60,18 @@ class MediaFileHandlerTest(tornado.testing.AsyncHTTPTestCase):
 
     @parameterized.expand(
         [
-            ("MockVideo.mp4", 'attachment; filename="MockVideo.mp4"'),
+            ("MockVideo.mp4", "video/mp4", 'attachment; filename="MockVideo.mp4"'),
             (
                 b"\xe6\xbc\xa2\xe5\xad\x97.mp3".decode(),
+                "video/mp4",
                 "attachment; filename*=utf-8''%E6%BC%A2%E5%AD%97.mp3",
+            ),
+            (None, "text/plain", 'attachment; filename="streamlit_download.txt"'),
+            (None, "video/mp4", 'attachment; filename="streamlit_download.mp4"'),
+            (
+                None,
+                "application/octet-stream",
+                'attachment; filename="streamlit_download.bin"',
             ),
         ]
     )
@@ -69,14 +79,17 @@ class MediaFileHandlerTest(tornado.testing.AsyncHTTPTestCase):
         "streamlit.runtime.media_file_manager._get_session_id",
         MagicMock(return_value="mock_session_id"),
     )
-    def test_downloadable_file(self, file_name, content_disposition_header) -> None:
+    def test_downloadable_file(
+        self, file_name, mimetype, content_disposition_header
+    ) -> None:
         """Downloadable files get an additional 'Content-Disposition' header
-        that includes their user-specified filename.
+        that includes their user-specified filename or
+        generic filename if filename is not specified.
         """
-        # Add a downloadable file with a filename
+        # Add a downloadable file with an optional filename
         url = self.media_file_manager.add(
             b"mock_data",
-            "video/mp4",
+            mimetype,
             "mock_coords",
             file_name=file_name,
             is_for_static_download=True,
@@ -85,7 +98,7 @@ class MediaFileHandlerTest(tornado.testing.AsyncHTTPTestCase):
 
         self.assertEqual(200, rsp.code)
         self.assertEqual(b"mock_data", rsp.body)
-        self.assertEqual("video/mp4", rsp.headers["Content-Type"])
+        self.assertEqual(mimetype, rsp.headers["Content-Type"])
         self.assertEqual(str(len(b"mock_data")), rsp.headers["Content-Length"])
         self.assertEqual(content_disposition_header, rsp.headers["Content-Disposition"])
 

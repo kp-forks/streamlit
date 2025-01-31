@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,13 +13,12 @@
 # limitations under the License.
 
 """st.help unit test."""
+
 import inspect
-import sys
 import unittest
 from unittest.mock import patch
 
 import numpy as np
-import pytest
 
 import streamlit as st
 from streamlit.elements.doc_string import _get_variable_name_from_code_str
@@ -60,7 +59,13 @@ class StHelpTest(DeltaGeneratorTestCase):
         self.assertEqual("", ds.name)
         self.assertEqual("None", ds.value)
         self.assertEqual("NoneType", ds.type)
-        self.assertEqual("", ds.doc_string)
+
+        import sys
+
+        if sys.version_info >= (3, 13):
+            self.assertEqual("The type of the None singleton.", ds.doc_string)
+        else:
+            self.assertEqual("", ds.doc_string)
 
     def test_basic_func_with_doc(self):
         """Test basic function with docstring."""
@@ -111,21 +116,7 @@ class StHelpTest(DeltaGeneratorTestCase):
         self.assertEqual("st.audio", ds.name)
         self.assertEqual("method", ds.type)
 
-        if sys.version_info < (3, 9):
-            # Python < 3.9 represents the signature slightly differently
-            signature = (
-                "(data: Union[str, bytes, _io.BytesIO, io.RawIOBase, "
-                "_io.BufferedReader, ForwardRef('npt.NDArray[Any]'), NoneType], "
-                "format: str = 'audio/wav', start_time: int = 0, *, "
-                "sample_rate: Union[int, NoneType] = None) -> 'DeltaGenerator'"
-            )
-        else:
-            signature = (
-                "(data: Union[str, bytes, _io.BytesIO, io.RawIOBase, "
-                "_io.BufferedReader, ForwardRef('npt.NDArray[Any]'), NoneType], "
-                "format: str = 'audio/wav', start_time: int = 0, *, "
-                "sample_rate: Optional[int] = None) -> 'DeltaGenerator'"
-            )
+        signature = "(data: 'MediaData', format: 'str' = 'audio/wav', start_time: 'MediaTime' = 0, *, sample_rate: 'int | None' = None, end_time: 'MediaTime | None' = None, loop: 'bool' = False, autoplay: 'bool' = False) -> 'DeltaGenerator'"
 
         self.assertEqual(
             f"streamlit.delta_generator.MediaMixin.audio{signature}", ds.value
@@ -157,20 +148,17 @@ class StHelpTest(DeltaGeneratorTestCase):
         self.assertEqual("int", ds.type)
         self.assertTrue(len(ds.doc_string) > 0)
 
-    # TODO: When we stop supporting Python 3.7, uncomment this.
-    # This doesn't even compile when running in 3.7, so I'm commenting it out.
-    # Which means we can't test support for walrus in st.help :(
-    # def test_walrus(self):
-    #     """Test a named variable using walrus operator."""
+    def test_walrus(self):
+        """Test a named variable using walrus operator."""
 
-    #     with patch_varname_getter():
-    #         st.help(myvar := 123)
+        with patch_varname_getter():
+            st.help(myvar := 123)  # noqa: F841
 
-    #     ds = self.get_delta_from_queue().new_element.doc_string
-    #     self.assertEqual("myvar", ds.name)
-    #     self.assertEqual("123", ds.value)
-    #     self.assertEqual("int", ds.type)
-    #     self.assertTrue(len(ds.doc_string) > 0)
+        ds = self.get_delta_from_queue().new_element.doc_string
+        self.assertEqual("myvar", ds.name)
+        self.assertEqual("123", ds.value)
+        self.assertEqual("int", ds.type)
+        self.assertTrue(len(ds.doc_string) > 0)
 
     def test_complex_var(self):
         """Test complex dict-list-object combination."""
@@ -219,7 +207,7 @@ class StHelpTest(DeltaGeneratorTestCase):
         """When the object is a class and no docs are defined,
         we expect docs to be None."""
 
-        class MyClass(object):
+        class MyClass:
             pass
 
         with patch_varname_getter():
@@ -236,11 +224,11 @@ class StHelpTest(DeltaGeneratorTestCase):
         self.assertEqual("class", ds.type)
         self.assertEqual("", ds.doc_string)
 
-    def test_padding_an_instance(self):
+    def test_passing_an_instance(self):
         """When the type of the object is type and no docs are defined,
         we expect docs to be None."""
 
-        class MyClass(object):
+        class MyClass:
             pass
 
         with patch_varname_getter():
@@ -251,14 +239,14 @@ class StHelpTest(DeltaGeneratorTestCase):
         self.assertEqual("MyClass", ds.name)
         self.assertEqual(
             "tests.streamlit.elements.help_test.StHelpTest."
-            "test_padding_an_instance.<locals>.MyClass()",
+            "test_passing_an_instance.<locals>.MyClass()",
             ds.value,
         )
         self.assertEqual("class", ds.type)
         self.assertEqual("", ds.doc_string)
 
     def test_class_members(self):
-        class MyClass(object):
+        class MyClass:
             a = 1
             b = 2
 
@@ -300,7 +288,7 @@ class StHelpTest(DeltaGeneratorTestCase):
             self.assertEqual(ds.members[i].type, expected[3])
 
     def test_instance_members(self):
-        class MyClass(object):
+        class MyClass:
             a = 1
             b = 2
 
@@ -397,9 +385,6 @@ class GetVariableNameFromCodeStrTest(unittest.TestCase):
                 actual = _get_variable_name_from_code_str(code)
                 self.assertEqual(actual, None)
 
-    @pytest.mark.skipif(
-        sys.version_info < (3, 8), reason="Walrus was introduced in Python 3.8"
-    )
     def test_walrus_should_return_var_name(self):
         for st_call in st_calls:
             # Wrap test in an st call.
@@ -446,8 +431,6 @@ class GetVariableNameFromCodeStrTest(unittest.TestCase):
             self.assertEqual(actual, code)
 
     def test_if_dont_know_just_echo(self):
-        is_below_py38 = sys.version_info < (3, 8)
-
         tests = [
             (
                 "foo()",
@@ -459,21 +442,15 @@ class GetVariableNameFromCodeStrTest(unittest.TestCase):
             ),
             (
                 "(x for x in range(10))",
-                # Account for Python 3.7 bug that eats the first char.
-                # See https://github.com/python/cpython/commit/b619b097923155a7034c05c4018bf06af9f994d0
-                # The result is that the string we show in Python 3.7 is not syntactically correct
-                # but we're OK living with that since it only happens in unlikely scenarios.
-                "x for x in range(10))" if is_below_py38 else "(x for x in range(10))",
+                "(x for x in range(10))",
             ),
             (
                 "x for x in range(10)",
-                # Interestingly, when the generator expression isn't wrapped in parentheses, Python
-                # 3.7 doesn't display the bug above.
-                # However Python GREATER than 3.7 has its own bug here (because of course) where the
+                # Python >= 3.8 has its own bug here (because of course) where the
                 # column offsets are off by one in different directions, leading to parentheses
                 # appearing around the generator expression. This leads to syntactically correct
                 # code, though, so not so bad!
-                "x for x in range(10)" if is_below_py38 else "(x for x in range(10))",
+                "(x for x in range(10))",
             ),
             (
                 "{x: None for x in range(10)}",

@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import asyncio
 import threading
 from queue import Queue
+from unittest import IsolatedAsyncioTestCase
 from unittest.mock import MagicMock
 
 from streamlit.runtime import Runtime, RuntimeConfig
-from tests.isolated_asyncio_test_case import IsolatedAsyncioTestCase
 
 
 class RuntimeThreadingTest(IsolatedAsyncioTestCase):
@@ -38,7 +40,7 @@ class RuntimeThreadingTest(IsolatedAsyncioTestCase):
             try:
                 # This function should be called in another thread, which
                 # should not already have an asyncio loop.
-                with self.assertRaises(BaseException):
+                with self.assertRaises(RuntimeError):
                     asyncio.get_running_loop()
 
                 # Create a Runtime instance and put it in the (thread-safe) queue,
@@ -47,7 +49,9 @@ class RuntimeThreadingTest(IsolatedAsyncioTestCase):
                 config = RuntimeConfig(
                     "mock/script/path.py",
                     "",
+                    component_registry=MagicMock(),
                     media_file_storage=MagicMock(),
+                    uploaded_file_manager=MagicMock(),
                     session_manager_class=MagicMock,
                     session_storage=MagicMock(),
                     cache_storage_manager=MagicMock(),

@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,14 +16,13 @@
 Global pytest fixtures. This file is automatically run by pytest before tests
 are executed.
 """
-import logging
+
+from __future__ import annotations
+
 import os
-import sys
 from unittest.mock import mock_open, patch
 
 import pytest
-
-from tests.constants import SNOWFLAKE_CREDENTIAL_FILE
 
 # Do not import any Streamlit modules here! See below for details.
 
@@ -44,7 +43,7 @@ with patch(
     # be sure to catch any instances of calling config.get_option() when
     # first importing a file. We disallow this because doing so means that we
     # miss config options set via flag or environment variable.
-    import streamlit as st
+    import streamlit as st  # noqa: F401
     from streamlit import config, file_util, source_util
 
     assert (
@@ -66,64 +65,87 @@ with patch(
     source_util._cached_pages = {}
 
 
-def pytest_sessionfinish():
-    # We're not waiting for scriptrunner threads to cleanly close before ending the PyTest,
-    # which results in raised exception ValueError: I/O operation on closed file.
-    # This is well known issue in PyTest, check out these discussions for more:
-    # * https://github.com/pytest-dev/pytest/issues/5502
-    # * https://github.com/pytest-dev/pytest/issues/5282
-    # To prevent the exception from being raised on pytest_sessionfinish
-    # we disable exception raising in logging module
-    logging.raiseExceptions = False
-
-
 def pytest_addoption(parser: pytest.Parser):
     group = parser.getgroup("streamlit")
 
     group.addoption(
-        "--require-snowflake",
+        "--require-integration",
         action="store_true",
-        help="only run tests that requires snowflake. ",
+        help="only run integration tests. ",
     )
 
 
 def pytest_configure(config: pytest.Config):
     config.addinivalue_line(
         "markers",
-        "require_snowflake(name): mark test to run only on "
-        "when --require-snowflake option is passed to pytest",
+        "require_integration(name): mark test to run only on "
+        "when --require-integration option is passed to pytest",
     )
 
-    is_require_snowflake = config.getoption("--require-snowflake", default=False)
-    if is_require_snowflake:
-        if sys.version_info[0:2] != (3, 8):
-            raise pytest.UsageError("Python 3.8 is required to run Snowflake tests")
+    is_require_integration = config.getoption("--require-integration", default=False)
+    if is_require_integration:
         try:
-            import snowflake.snowpark
+            import snowflake.snowpark  # noqa: F401
         except ImportError:
             raise pytest.UsageError(
                 "The snowflake-snowpark-python package is not installed."
             )
-        if not SNOWFLAKE_CREDENTIAL_FILE.exists():
-            raise pytest.UsageError(
-                f"Missing credential file: {SNOWFLAKE_CREDENTIAL_FILE}"
-            )
 
 
 def pytest_runtest_setup(item: pytest.Item):
-    is_require_snowflake = item.config.getoption("--require-snowflake", default=False)
-    has_require_snowflake_marker = bool(
-        list(item.iter_markers(name="require_snowflake"))
+    # Ensure Default Strategy is V1 to start
+    from streamlit.runtime.pages_manager import PagesManager, PagesStrategyV1
+
+    PagesManager.DefaultStrategy = PagesStrategyV1
+
+    is_require_integration = item.config.getoption(
+        "--require-integration", default=False
+    )
+    has_require_integration_marker = bool(
+        list(item.iter_markers(name="require_integration"))
     )
 
-    if is_require_snowflake and not has_require_snowflake_marker:
+    if is_require_integration and not has_require_integration_marker:
         pytest.skip(
-            f"The test is skipped because it has require_snowflake marker. "
-            f"This tests are only run when --require-snowflake flag is passed to pytest. "
+            f"The test is skipped because it has require_integration marker. "
+            f"This tests are only run when --require-integration flag is passed to pytest. "
             f"{item}"
         )
-    if not is_require_snowflake and has_require_snowflake_marker:
+    if not is_require_integration and has_require_integration_marker:
         pytest.skip(
             f"The test is skipped because it does not have the right marker. "
-            f"Only tests marked with pytest.mark.require_snowflake() are run. {item}"
+            f"Only tests marked with pytest.mark.require_integration() are run. {item}"
         )
+
+
+def pytest_collection_modifyitems(config, items):
+    """
+    Adds the `@pytest.mark.benchmark` marker to tests that use the `benchmark`
+    fixture. This marker allows us to run only performance tests when needed.
+    """
+    for item in items:
+        markers = item.get_closest_marker("usefixtures")
+        if markers and "benchmark" in markers.args:
+            item.add_marker(pytest.mark.performance)
+
+
+@pytest.fixture(scope="function")
+def benchmark(
+    benchmark,
+    request: pytest.FixtureRequest,
+):
+    # Check to see that the test has the @pytest.mark.performance mark
+    if not request.node.get_closest_marker("performance"):
+        raise ValueError(
+            "The benchmark fixture can only be used with tests marked with @pytest.mark.performance"
+        )
+
+    # If the request is a class, add benchmark to the class so that it can be
+    # accessed via `self.benchmark()`. This is most commonly used in unittest
+    # classes.
+    if request.cls:
+        request.cls.benchmark = benchmark
+
+    # For pytest functions, return the benchmark function so that it can be
+    # accessed via the fixture.
+    return benchmark

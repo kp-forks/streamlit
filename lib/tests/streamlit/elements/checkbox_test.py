@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,13 +19,14 @@ from unittest.mock import MagicMock, patch
 from parameterized import parameterized
 
 import streamlit as st
+from streamlit.elements.lib.policies import _LOGGER
 from streamlit.errors import StreamlitAPIException
+from streamlit.proto.Checkbox_pb2 import Checkbox as CheckboxProto
 from streamlit.proto.LabelVisibilityMessage_pb2 import LabelVisibilityMessage
-from streamlit.type_util import _LOGGER
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
 
 
-class SomeObj(object):
+class SomeObj:
     pass
 
 
@@ -44,6 +45,7 @@ class CheckboxTest(DeltaGeneratorTestCase):
             c.label_visibility.value,
             LabelVisibilityMessage.LabelVisibilityOptions.VISIBLE,
         )
+        self.assertEqual(c.type, CheckboxProto.StyleType.DEFAULT)
 
     def test_just_disabled(self):
         """Test that it can be called with disabled param."""
@@ -141,3 +143,35 @@ hello
             "`label` got an empty value. This is discouraged for accessibility reasons",
             logs.records[0].msg,
         )
+
+    def test_toggle_widget(self):
+        """Test that the usage of `st.toggle` uses the correct checkbox proto config."""
+        st.toggle("the label")
+
+        c = self.get_delta_from_queue().new_element.checkbox
+        self.assertEqual(c.label, "the label")
+        self.assertEqual(c.default, False)
+        self.assertEqual(c.disabled, False)
+        self.assertEqual(
+            c.label_visibility.value,
+            LabelVisibilityMessage.LabelVisibilityOptions.VISIBLE,
+        )
+        self.assertEqual(c.type, CheckboxProto.StyleType.TOGGLE)
+
+    def test_checkbox_shows_cached_widget_replay_warning(self):
+        """Test that a warning is shown when this widget is used inside a cached function."""
+        st.cache_data(lambda: st.checkbox("the label"))()
+
+        # The widget itself is still created, so we need to go back one element more:
+        el = self.get_delta_from_queue(-2).new_element.exception
+        self.assertEqual(el.type, "CachedWidgetWarning")
+        self.assertTrue(el.is_warning)
+
+    def test_toggle_shows_cached_widget_replay_warning(self):
+        """Test that a warning is shown when this widget is used inside a cached function."""
+        st.cache_data(lambda: st.toggle("the label"))()
+
+        # The widget itself is still created, so we need to go back one element more:
+        el = self.get_delta_from_queue(-2).new_element.exception
+        self.assertEqual(el.type, "CachedWidgetWarning")
+        self.assertTrue(el.is_warning)

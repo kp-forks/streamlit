@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,11 +14,13 @@
 
 """Unit tests for st.image and other image.py utility code."""
 
+from __future__ import annotations
+
 import io
 import random
+from pathlib import Path
 from unittest import mock
 
-import cv2
 import numpy as np
 import PIL.Image as Image
 import pytest
@@ -26,8 +28,15 @@ from parameterized import parameterized
 from PIL import ImageDraw
 
 import streamlit as st
-import streamlit.elements.image as image
-from streamlit.elements.image import _np_array_to_bytes, _PIL_to_bytes
+from streamlit.elements.lib.image_utils import (
+    AtomicImage,
+    WidthBehavior,
+    _image_may_have_alpha_channel,
+    _np_array_to_bytes,
+    _PIL_to_bytes,
+    image_to_url,
+    marshall_images,
+)
 from streamlit.errors import StreamlitAPIException
 from streamlit.proto.Image_pb2 import ImageList as ImageListProto
 from streamlit.runtime.memory_media_file_storage import (
@@ -76,9 +85,12 @@ def create_image(size, format="RGB", add_alpha=True):
         image.putalpha(alpha)
 
     if format == "BGR":
-        return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-    else:
-        return image
+        # Grab the indices of channel in last dimension
+        np_image = np.array(image)
+        # Swap the channels to convert from RGB to BGR:
+        return np_image[..., ["BGR".index(s) for s in "RGB"]]
+
+    return image
 
 
 def create_gif(size):
@@ -89,11 +101,11 @@ def create_gif(size):
 
     # Make ten frames with the circle of a random size and location
     random.seed(0)
-    for i in range(0, 10):
+    for _ in range(0, 10):
         frame = im.copy()
         draw = ImageDraw.Draw(frame)
         pos = (random.randrange(0, size), random.randrange(0, size))
-        circle_size = random.randrange(10, size / 2)
+        circle_size = random.randrange(10, int(size / 2))
         draw.ellipse([pos, tuple(p + circle_size for p in pos)], "black")
         images.append(frame.copy())
 
@@ -146,19 +158,19 @@ class ImageProtoTest(DeltaGeneratorTestCase):
             (IMAGES["gif_64_64"]["gif"], "gif"),
         ]
     )
-    def test_marshall_images(self, data_in: image.AtomicImage, format: str):
-        """Test streamlit.image.marshall_images.
+    def test_marshall_images(self, data_in: AtomicImage, format: str):
+        """Test streamlit.elements.lib.image_utils.marshall_images.
         Need to test the following:
-        * if list
-        * if not list (is rgb vs is bgr)
-        * if captions is not list but image is
-        * if captions length doesn't match image length
-        * if the caption is set.
-        * PIL Images
-        * Numpy Arrays
-        * Url
-        * Path
-        * Bytes
+        - if list
+        - if not list (is rgb vs is bgr)
+        - if captions is not list but image is
+        - if captions length doesn't match image length
+        - if the caption is set.
+        - PIL Images
+        - Numpy Arrays
+        - Url
+        - Path
+        - Bytes
         """
         mimetype = f"image/{format}"
         if isinstance(data_in, bytes):
@@ -192,9 +204,9 @@ class ImageProtoTest(DeltaGeneratorTestCase):
         ]
     )
     def test_marshall_images_with_auto_output_format(
-        self, data_in: image.AtomicImage, expected_extension: str
+        self, data_in: AtomicImage, expected_extension: str
     ):
-        """Test streamlit.image.marshall_images.
+        """Test streamlit.elements.lib.image_utils.marshall_images.
         with auto output_format
         """
 
@@ -209,10 +221,14 @@ class ImageProtoTest(DeltaGeneratorTestCase):
             (IMAGES["gif_64_64"]["gif"], "/media/"),
             ("https://streamlit.io/test.png", "https://streamlit.io/test.png"),
             ("https://streamlit.io/test.svg", "https://streamlit.io/test.svg"),
+            (
+                "<svg fake></svg>",
+                "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciICBmYWtlPjwvc3ZnPg==",
+            ),
         ]
     )
     def test_image_to_url_prefix(self, img, expected_prefix):
-        url = image.image_to_url(
+        url = image_to_url(
             img,
             width=-1,
             clamp=False,
@@ -231,7 +247,7 @@ class ImageProtoTest(DeltaGeneratorTestCase):
         ]
     )
     def test_image_to_url_suffix(self, img, expected_suffix):
-        url = image.image_to_url(
+        url = image_to_url(
             img,
             width=-1,
             clamp=False,
@@ -244,16 +260,21 @@ class ImageProtoTest(DeltaGeneratorTestCase):
     @parameterized.expand(
         [
             ("foo.png", "image/png", False),
+            (Path("foo.png"), "image/png", False),
             ("path/to/foo.jpg", "image/jpeg", False),
+            (Path("path/to/foo.jpg"), "image/jpeg", False),
             ("path/to/foo.gif", "image/gif", False),
+            (Path("path/to/foo.gif"), "image/gif", False),
             ("foo.unknown_extension", "application/octet-stream", False),
+            (Path("foo.unknown_extension"), "application/octet-stream", False),
             ("foo", "application/octet-stream", False),
+            (Path("foo"), "application/octet-stream", False),
             ("https://foo.png", "image/png", True),
             ("https://foo.gif", "image/gif", True),
         ]
     )
     def test_image_to_url_adds_filenames_to_media_file_mgr(
-        self, input_string: str, expected_mimetype: str, is_url: bool
+        self, input_string: str | Path, expected_mimetype: str, is_url: bool
     ):
         """if `image_to_url` is unable to open an image passed by name, it
         still passes the filename to MediaFileManager. (MediaFileManager may have a
@@ -266,7 +287,7 @@ class ImageProtoTest(DeltaGeneratorTestCase):
         ) as mock_mfm_add, mock.patch("streamlit.runtime.caching.save_media_data"):
             mock_mfm_add.return_value = "https://mockoutputurl.com"
 
-            result = image.image_to_url(
+            result = image_to_url(
                 input_string,
                 width=-1,
                 clamp=False,
@@ -281,34 +302,48 @@ class ImageProtoTest(DeltaGeneratorTestCase):
                 self.assertEqual(input_string, result)
                 mock_mfm_add.assert_not_called()
             else:
-                # Other strings should be passed to MediaFileManager.add
+                # Other strings and Path objects should be passed to MediaFileManager.add
                 self.assertEqual("https://mockoutputurl.com", result)
+                expected_input = (
+                    str(input_string)
+                    if isinstance(input_string, Path)
+                    else input_string
+                )
                 mock_mfm_add.assert_called_once_with(
-                    input_string, expected_mimetype, "mock_image_id"
+                    expected_input, expected_mimetype, "mock_image_id"
                 )
 
     @parameterized.expand(
         [
-            ("<svg fake></svg>", "data:image/svg+xml,<svg fake></svg>"),
-            ("<svg\nfake></svg>", "data:image/svg+xml,<svg\nfake></svg>"),
-            ("\n<svg fake></svg>", "data:image/svg+xml,\n<svg fake></svg>"),
+            (
+                "<svg fake></svg>",
+                "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciICBmYWtlPjwvc3ZnPg==",
+            ),
+            (
+                "<svg\nfake></svg>",
+                "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIApmYWtlPjwvc3ZnPg==",
+            ),
+            (
+                "\n<svg fake></svg>",
+                "data:image/svg+xml;base64,CjxzdmcgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiAgZmFrZT48L3N2Zz4=",
+            ),
             (
                 '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n<!-- Created with Inkscape (http://www.inkscape.org/) -->\n\n<svg\n fake></svg>',
-                'data:image/svg+xml,<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n<!-- Created with Inkscape (http://www.inkscape.org/) -->\n\n<svg\n fake></svg>',
+                "data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiIHN0YW5kYWxvbmU9Im5vIj8+CjwhLS0gQ3JlYXRlZCB3aXRoIElua3NjYXBlIChodHRwOi8vd3d3Lmlua3NjYXBlLm9yZy8pIC0tPgoKPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIAogZmFrZT48L3N2Zz4=",
             ),
             (
                 '<?xml version="1.0" encoding="utf-8"?><!-- Generator: Adobe Illustrator 17.1.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  --><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg fake></svg>',
-                'data:image/svg+xml,<?xml version="1.0" encoding="utf-8"?><!-- Generator: Adobe Illustrator 17.1.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  --><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg fake></svg>',
+                "data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0idXRmLTgiPz48IS0tIEdlbmVyYXRvcjogQWRvYmUgSWxsdXN0cmF0b3IgMTcuMS4wLCBTVkcgRXhwb3J0IFBsdWctSW4gLiBTVkcgVmVyc2lvbjogNi4wMCBCdWlsZCAwKSAgLS0+PCFET0NUWVBFIHN2ZyBQVUJMSUMgIi0vL1czQy8vRFREIFNWRyAxLjEvL0VOIiAiaHR0cDovL3d3dy53My5vcmcvR3JhcGhpY3MvU1ZHLzEuMS9EVEQvc3ZnMTEuZHRkIj48c3ZnIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgIGZha2U+PC9zdmc+",
             ),
             (
                 '\n<?xml version="1.0" encoding="utf-8"?>\n<!-- Generator: Adobe Illustrator 17.1.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->\n<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n<svg fake></svg>',
-                'data:image/svg+xml,\n<?xml version="1.0" encoding="utf-8"?>\n<!-- Generator: Adobe Illustrator 17.1.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->\n<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n<svg fake></svg>',
+                "data:image/svg+xml;base64,Cjw/eG1sIHZlcnNpb249IjEuMCIgZW5jb2Rpbmc9InV0Zi04Ij8+CjwhLS0gR2VuZXJhdG9yOiBBZG9iZSBJbGx1c3RyYXRvciAxNy4xLjAsIFNWRyBFeHBvcnQgUGx1Zy1JbiAuIFNWRyBWZXJzaW9uOiA2LjAwIEJ1aWxkIDApICAtLT4KPCFET0NUWVBFIHN2ZyBQVUJMSUMgIi0vL1czQy8vRFREIFNWRyAxLjEvL0VOIiAiaHR0cDovL3d3dy53My5vcmcvR3JhcGhpY3MvU1ZHLzEuMS9EVEQvc3ZnMTEuZHRkIj4KPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciICBmYWtlPjwvc3ZnPg==",
             ),
         ]
     )
     def test_marshall_svg(self, image_markup: str, expected_prefix: str):
         image_list_proto = ImageListProto()
-        image.marshall_images(
+        marshall_images(
             None,
             image_markup,
             None,
@@ -316,8 +351,9 @@ class ImageProtoTest(DeltaGeneratorTestCase):
             image_list_proto,
             False,
         )
+
         img = image_list_proto.imgs[0]
-        self.assertTrue(img.markup.startswith(expected_prefix))
+        self.assertTrue(img.url.startswith(expected_prefix))
 
     def test_BytesIO_to_bytes(self):
         """Test streamlit.image.BytesIO_to_bytes."""
@@ -326,9 +362,9 @@ class ImageProtoTest(DeltaGeneratorTestCase):
     def test_verify_np_shape(self):
         """Test streamlit.image.verify_np_shape.
         Need to test the following:
-        * check shape not (2, 3)
-        * check shape 3 but dims 1, 3, 4
-        * if only one channel convert to just 2 dimensions.
+        - check shape not (2, 3)
+        - check shape 3 but dims 1, 3, 4
+        - if only one channel convert to just 2 dimensions.
         """
         with pytest.raises(StreamlitAPIException) as shape_exc:
             st.image(np.ndarray(shape=1))
@@ -346,17 +382,17 @@ class ImageProtoTest(DeltaGeneratorTestCase):
     def test_clip_image(self):
         """Test streamlit.image.clip_image.
         Need to test the following:
-        * float
-        * int
-        * float with clipping
-        * int  with clipping
+        - float
+        - int
+        - float with clipping
+        - int  with clipping
         """
         pass
 
     @parameterized.expand([("P", True), ("RGBA", True), ("LA", True), ("RGB", False)])
     def test_image_may_have_alpha_channel(self, format: str, expected_alpha: bool):
         img = Image.new(format, (1, 1))
-        self.assertEqual(image._image_may_have_alpha_channel(img), expected_alpha)
+        self.assertEqual(_image_may_have_alpha_channel(img), expected_alpha)
 
     def test_st_image_PIL_image(self):
         """Test st.image with PIL image."""
@@ -436,7 +472,68 @@ class ImageProtoTest(DeltaGeneratorTestCase):
 
     def test_st_image_bad_width(self):
         """Test st.image with bad width."""
-        with self.assertRaises(StreamlitAPIException) as ctx:
-            st.image("does/not/exist", width=-1234)
+        st.image(
+            Image.new("RGB", (64, 64), color="red"),
+            use_column_width=False,
+            width=-1234,
+        )
 
-        self.assertTrue("Image width must be positive." in str(ctx.exception))
+        el = self.get_delta_from_queue().new_element
+        self.assertEqual(el.imgs.width, WidthBehavior.ORIGINAL)
+
+    def test_st_image_use_container_width_default(self):
+        """Test st.image without specifying a use_container_width."""
+        img = Image.new("RGB", (64, 64), color="red")
+
+        st.image(img)
+
+        el = self.get_delta_from_queue().new_element
+        self.assertEqual(el.imgs.width, WidthBehavior.MIN_IMAGE_OR_CONTAINER)
+
+    def test_st_image_use_container_width_true(self):
+        """Test st.image with use_container_width=True."""
+        img = Image.new("RGB", (64, 64), color="red")
+
+        st.image(img, use_container_width=True)
+
+        el = self.get_delta_from_queue().new_element
+        self.assertEqual(el.imgs.width, WidthBehavior.MAX_IMAGE_OR_CONTAINER)
+
+    def test_st_image_use_container_width_false(self):
+        """Test st.image with use_container_width=False."""
+        img = Image.new("RGB", (64, 64), color="red")
+
+        st.image(img, use_container_width=False)
+
+        el = self.get_delta_from_queue().new_element
+        self.assertEqual(el.imgs.width, WidthBehavior.MIN_IMAGE_OR_CONTAINER)
+
+    def test_st_image_use_container_width_true_and_given_width(self):
+        """Test st.image with use_container_width=True and a given width."""
+        img = Image.new("RGB", (64, 64), color="red")
+
+        st.image(img, width=100, use_container_width=True)
+
+        el = self.get_delta_from_queue().new_element
+        self.assertEqual(el.imgs.width, WidthBehavior.MAX_IMAGE_OR_CONTAINER)
+
+    def test_st_image_use_container_width_false_and_given_width(self):
+        """Test st.image with use_container_width=False and a given width."""
+        img = Image.new("RGB", (64, 64), color="red")
+
+        st.image(img, width=100, use_container_width=False)
+
+        el = self.get_delta_from_queue().new_element
+        self.assertEqual(el.imgs.width, 100)
+
+    def test_st_image_use_container_width_and_use_column_width(self):
+        """Test st.image with use_container_width and use_column_width."""
+        img = Image.new("RGB", (64, 64), color="red")
+
+        with self.assertRaises(StreamlitAPIException) as e:
+            st.image(img, use_container_width=True, use_column_width=True)
+
+        self.assertTrue(
+            "`use_container_width` and `use_column_width` cannot be set at the same time."
+            in str(e.exception)
+        )

@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ df = pd.DataFrame(
 st.write(df)
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def stampa_df(df_param: pd.DataFrame) -> None:
     st.write(df_param)
 

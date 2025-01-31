@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,45 +14,33 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Dict, Final, Literal, Mapping, Union
 
-import pandas as pd
-import pyarrow as pa
-from typing_extensions import Literal, TypeAlias, TypedDict
+from typing_extensions import TypeAlias
 
-from streamlit.proto.Arrow_pb2 import Arrow as ArrowProto
+from streamlit.dataframe_util import DataFormat
+from streamlit.elements.lib.column_types import ColumnConfig, ColumnType
+from streamlit.elements.lib.dicttools import remove_none_values
+from streamlit.errors import StreamlitAPIException
+
+if TYPE_CHECKING:
+    import pyarrow as pa
+    from pandas import DataFrame, Index, Series
+
+    from streamlit.proto.Arrow_pb2 import Arrow as ArrowProto
+
 
 # The index identifier can be used to apply configuration options
-IndexIdentifierType = Literal["index"]
-INDEX_IDENTIFIER: IndexIdentifierType = "index"
+IndexIdentifierType = Literal["_index"]
+INDEX_IDENTIFIER: IndexIdentifierType = "_index"
 
 # This is used as prefix for columns that are configured via the numerical position.
 # The integer value is converted into a string key with this prefix.
 # This needs to match with the prefix configured in the frontend.
-_NUMERICAL_POSITION_PREFIX = "col:"
-
-ColumnWidth = Literal["small", "medium", "large"]
-
-# Type alias that represents all available column types
-# which are configurable by the user.
-ColumnType: TypeAlias = Literal[
-    "object",
-    "text",
-    "number",
-    "checkbox",
-    "selectbox",
-    "list",
-    "datetime",
-    "date",
-    "time",
-    "link",
-    "line_chart",
-    "bar_chart",
-    "image",
-    "progress",
-]
+_NUMERICAL_POSITION_PREFIX = "_pos:"
 
 
 # The column data kind is used to describe the type of the data within the column.
@@ -76,17 +64,80 @@ class ColumnDataKind(str, Enum):
     UNKNOWN = "unknown"
 
 
-# The dataframe schema is just a list of column data kinds
-# based on the order of the columns in the underlying dataframe.
-# The index column(s) are attached at the beginning of the list.
-DataframeSchema: TypeAlias = List[ColumnDataKind]
+# The dataframe schema is a mapping from the name of the column
+# in the underlying dataframe to the column data kind.
+# The index column uses `_index` as name.
+DataframeSchema: TypeAlias = Dict[str, ColumnDataKind]
+
+# This mapping contains all editable column types mapped to the data kinds
+# that the column type is compatible for editing.
+_EDITING_COMPATIBILITY_MAPPING: Final[dict[ColumnType, list[ColumnDataKind]]] = {
+    "text": [ColumnDataKind.STRING, ColumnDataKind.EMPTY],
+    "number": [
+        ColumnDataKind.INTEGER,
+        ColumnDataKind.FLOAT,
+        ColumnDataKind.DECIMAL,
+        ColumnDataKind.STRING,
+        ColumnDataKind.TIMEDELTA,
+        ColumnDataKind.EMPTY,
+    ],
+    "checkbox": [
+        ColumnDataKind.BOOLEAN,
+        ColumnDataKind.STRING,
+        ColumnDataKind.INTEGER,
+        ColumnDataKind.EMPTY,
+    ],
+    "selectbox": [
+        ColumnDataKind.STRING,
+        ColumnDataKind.BOOLEAN,
+        ColumnDataKind.INTEGER,
+        ColumnDataKind.FLOAT,
+        ColumnDataKind.EMPTY,
+    ],
+    "date": [ColumnDataKind.DATE, ColumnDataKind.DATETIME, ColumnDataKind.EMPTY],
+    "time": [ColumnDataKind.TIME, ColumnDataKind.DATETIME, ColumnDataKind.EMPTY],
+    "datetime": [
+        ColumnDataKind.DATETIME,
+        ColumnDataKind.DATE,
+        ColumnDataKind.TIME,
+        ColumnDataKind.EMPTY,
+    ],
+    "link": [ColumnDataKind.STRING, ColumnDataKind.EMPTY],
+}
+
+
+def is_type_compatible(column_type: ColumnType, data_kind: ColumnDataKind) -> bool:
+    """Check if the column type is compatible with the underlying data kind.
+
+    This check only applies to editable column types (e.g. number or text).
+    Non-editable column types (e.g. bar_chart or image) can be configured for
+    all data kinds (this might change in the future).
+
+    Parameters
+    ----------
+    column_type : ColumnType
+        The column type to check.
+
+    data_kind : ColumnDataKind
+        The data kind to check.
+
+    Returns
+    -------
+    bool
+        True if the column type is compatible with the data kind, False otherwise.
+    """
+
+    if column_type not in _EDITING_COMPATIBILITY_MAPPING:
+        return True
+
+    return data_kind in _EDITING_COMPATIBILITY_MAPPING[column_type]
 
 
 def _determine_data_kind_via_arrow(field: pa.Field) -> ColumnDataKind:
     """Determine the data kind via the arrow type information.
 
     The column data kind refers to the shared data type of the values
-    in the column (e.g. integer, float, string, bool).
+    in the column (e.g. int, float, str, bool).
 
     Parameters
     ----------
@@ -99,6 +150,8 @@ def _determine_data_kind_via_arrow(field: pa.Field) -> ColumnDataKind:
     ColumnDataKind
         The data kind of the field.
     """
+    import pyarrow as pa
+
     field_type = field.type
     if pa.types.is_integer(field_type):
         return ColumnDataKind.INTEGER
@@ -147,12 +200,12 @@ def _determine_data_kind_via_arrow(field: pa.Field) -> ColumnDataKind:
 
 
 def _determine_data_kind_via_pandas_dtype(
-    column: pd.Series | pd.Index,
+    column: Series | Index,
 ) -> ColumnDataKind:
     """Determine the data kind by using the pandas dtype.
 
     The column data kind refers to the shared data type of the values
-    in the column (e.g. integer, float, string, bool).
+    in the column (e.g. int, float, str, bool).
 
     Parameters
     ----------
@@ -164,6 +217,8 @@ def _determine_data_kind_via_pandas_dtype(
     ColumnDataKind
         The data kind of the column.
     """
+    import pandas as pd
+
     column_dtype = column.dtype
     if pd.api.types.is_bool_dtype(column_dtype):
         return ColumnDataKind.BOOLEAN
@@ -180,10 +235,10 @@ def _determine_data_kind_via_pandas_dtype(
     if pd.api.types.is_timedelta64_dtype(column_dtype):
         return ColumnDataKind.TIMEDELTA
 
-    if pd.api.types.is_period_dtype(column_dtype):
+    if isinstance(column_dtype, pd.PeriodDtype):
         return ColumnDataKind.PERIOD
 
-    if pd.api.types.is_interval_dtype(column_dtype):
+    if isinstance(column_dtype, pd.IntervalDtype):
         return ColumnDataKind.INTERVAL
 
     if pd.api.types.is_complex_dtype(column_dtype):
@@ -199,12 +254,12 @@ def _determine_data_kind_via_pandas_dtype(
 
 
 def _determine_data_kind_via_inferred_type(
-    column: pd.Series | pd.Index,
+    column: Series | Index,
 ) -> ColumnDataKind:
     """Determine the data kind by inferring it from the underlying data.
 
     The column data kind refers to the shared data type of the values
-    in the column (e.g. integer, float, string, bool).
+    in the column (e.g. int, float, str, bool).
 
     Parameters
     ----------
@@ -216,8 +271,9 @@ def _determine_data_kind_via_inferred_type(
     ColumnDataKind
         The data kind of the column.
     """
+    from pandas.api.types import infer_dtype
 
-    inferred_type = pd.api.types.infer_dtype(column)
+    inferred_type = infer_dtype(column)
 
     if inferred_type == "string":
         return ColumnDataKind.STRING
@@ -261,17 +317,18 @@ def _determine_data_kind_via_inferred_type(
     if inferred_type == "empty":
         return ColumnDataKind.EMPTY
 
-    # TODO(lukasmasuch): Unused types: mixed, unknown-array, categorical, mixed-integer
+    # Unused types: mixed, unknown-array, categorical, mixed-integer
+
     return ColumnDataKind.UNKNOWN
 
 
 def _determine_data_kind(
-    column: pd.Series | pd.Index, field: Optional[pa.Field] = None
+    column: Series | Index, field: pa.Field | None = None
 ) -> ColumnDataKind:
     """Determine the data kind of a column.
 
     The column data kind refers to the shared data type of the values
-    in the column (e.g. integer, float, string, bool).
+    in the column (e.g. int, float, str, bool).
 
     Parameters
     ----------
@@ -285,8 +342,9 @@ def _determine_data_kind(
     ColumnDataKind
         The data kind of the column.
     """
+    import pandas as pd
 
-    if pd.api.types.is_categorical_dtype(column.dtype):
+    if isinstance(column.dtype, pd.CategoricalDtype):
         # Categorical columns can have different underlying data kinds
         # depending on the categories.
         return _determine_data_kind_via_inferred_type(column.dtype.categories)
@@ -303,7 +361,7 @@ def _determine_data_kind(
 
 
 def determine_dataframe_schema(
-    data_df: pd.DataFrame, arrow_schema: pa.Schema
+    data_df: DataFrame, arrow_schema: pa.Schema
 ) -> DataframeSchema:
     """Determine the schema of a dataframe.
 
@@ -318,38 +376,152 @@ def determine_dataframe_schema(
     -------
 
     DataframeSchema
-        A list that contains the detected data type for the index and columns.
-        It starts with the index and then contains the columns in the original order.
+        A mapping that contains the detected data type for the index and columns.
+        The key is the column name in the underlying dataframe or ``_index`` for index columns.
     """
 
-    dataframe_schema: DataframeSchema = []
+    dataframe_schema: DataframeSchema = {}
 
     # Add type of index:
-    dataframe_schema.append(_determine_data_kind(data_df.index))
+    # TODO(lukasmasuch): We need to apply changes here to support multiindex.
+    dataframe_schema[INDEX_IDENTIFIER] = _determine_data_kind(data_df.index)
 
     # Add types for all columns:
     for i, column in enumerate(data_df.items()):
-        _, column_data = column
-        dataframe_schema.append(
-            _determine_data_kind(column_data, arrow_schema.field(i))
+        column_name, column_data = column
+        dataframe_schema[column_name] = _determine_data_kind(
+            column_data, arrow_schema.field(i)
         )
     return dataframe_schema
 
 
-class ColumnConfig(TypedDict, total=False):
-    title: Optional[str]
-    width: Optional[Literal["small", "medium", "large"]]
-    hidden: Optional[bool]
-    disabled: Optional[bool]
-    required: Optional[bool]
-    alignment: Optional[Literal["left", "center", "right"]]
-    help: Optional[str]
-    type: Optional[ColumnType]
-    type_options: Optional[Dict[str, Any]]
-
-
 # A mapping of column names/IDs to column configs.
 ColumnConfigMapping: TypeAlias = Dict[Union[IndexIdentifierType, str], ColumnConfig]
+ColumnConfigMappingInput: TypeAlias = Mapping[
+    Union[IndexIdentifierType, str],
+    Union[ColumnConfig, None, str],
+]
+
+
+def process_config_mapping(
+    column_config: ColumnConfigMappingInput | None = None,
+) -> ColumnConfigMapping:
+    """Transforms a user-provided column config mapping into a valid column config mapping
+    that can be used by the frontend.
+
+    Parameters
+    ----------
+    column_config: dict or None
+        The user-provided column config mapping.
+
+    Returns
+    -------
+    dict
+        The transformed column config mapping.
+    """
+    if column_config is None:
+        return {}
+
+    transformed_column_config: ColumnConfigMapping = {}
+    for column, config in column_config.items():
+        if config is None:
+            transformed_column_config[column] = ColumnConfig(hidden=True)
+        elif isinstance(config, str):
+            transformed_column_config[column] = ColumnConfig(label=config)
+        elif isinstance(config, dict):
+            # Ensure that the column config objects are cloned
+            # since we will apply in-place changes to it.
+            transformed_column_config[column] = copy.deepcopy(config)
+        else:
+            raise StreamlitAPIException(
+                f"Invalid column config for column `{column}`. "
+                f"Expected `None`, `str` or `dict`, but got `{type(config)}`."
+            )
+    return transformed_column_config
+
+
+def update_column_config(
+    column_config_mapping: ColumnConfigMapping, column: str, column_config: ColumnConfig
+) -> None:
+    """Updates the column config value for a single column within the mapping.
+
+    Parameters
+    ----------
+
+    column_config_mapping : ColumnConfigMapping
+        The column config mapping to update.
+
+    column : str
+        The column to update the config value for.
+
+    column_config : ColumnConfig
+        The column config to update.
+    """
+
+    if column not in column_config_mapping:
+        column_config_mapping[column] = {}
+
+    column_config_mapping[column].update(column_config)
+
+
+def apply_data_specific_configs(
+    columns_config: ColumnConfigMapping,
+    data_format: DataFormat,
+) -> None:
+    """Apply data specific configurations to the provided dataframe.
+
+    This will apply inplace changes to the dataframe and the column configurations
+    depending on the data format.
+
+    Parameters
+    ----------
+    columns_config : ColumnConfigMapping
+        A mapping of column names/ids to column configurations.
+
+    data_format : DataFormat
+        The format of the data.
+    """
+
+    # Pandas adds a range index as default to all datastructures
+    # but for most of the non-pandas data objects it is unnecessary
+    # to show this index to the user. Therefore, we will hide it as default.
+    if data_format in [
+        DataFormat.SET_OF_VALUES,
+        DataFormat.TUPLE_OF_VALUES,
+        DataFormat.LIST_OF_VALUES,
+        DataFormat.NUMPY_LIST,
+        DataFormat.NUMPY_MATRIX,
+        DataFormat.LIST_OF_RECORDS,
+        DataFormat.LIST_OF_ROWS,
+        DataFormat.COLUMN_VALUE_MAPPING,
+        # Dataframe-like objects that don't have an index:
+        DataFormat.PANDAS_ARRAY,
+        DataFormat.PANDAS_INDEX,
+        DataFormat.POLARS_DATAFRAME,
+        DataFormat.POLARS_SERIES,
+        DataFormat.POLARS_LAZYFRAME,
+        DataFormat.PYARROW_ARRAY,
+        DataFormat.RAY_DATASET,
+    ]:
+        update_column_config(columns_config, INDEX_IDENTIFIER, {"hidden": True})
+
+
+def _convert_column_config_to_json(column_config_mapping: ColumnConfigMapping) -> str:
+    try:
+        # Ignore all None values and prefix columns specified by numerical index:
+        return json.dumps(
+            {
+                (
+                    f"{_NUMERICAL_POSITION_PREFIX}{str(k)}" if isinstance(k, int) else k
+                ): v
+                for (k, v) in remove_none_values(column_config_mapping).items()
+            },
+            allow_nan=False,
+        )
+    except ValueError as ex:
+        raise StreamlitAPIException(
+            f"The provided column config cannot be serialized into JSON: {ex}"
+        ) from ex
 
 
 def marshall_column_config(
@@ -366,19 +538,4 @@ def marshall_column_config(
         The column config to marshall.
     """
 
-    # Ignore all None values and prefix columns specified by numerical index
-    def remove_none_values(input_dict: Dict[Any, Any]) -> Dict[Any, Any]:
-        new_dict = {}
-        for key, val in input_dict.items():
-            if isinstance(val, dict):
-                val = remove_none_values(val)
-            if val is not None:
-                new_dict[key] = val
-        return new_dict
-
-    proto.columns = json.dumps(
-        {
-            (f"{_NUMERICAL_POSITION_PREFIX}{str(k)}" if isinstance(k, int) else k): v
-            for (k, v) in remove_none_values(column_config_mapping).items()
-        }
-    )
+    proto.columns = _convert_column_config_to_json(column_config_mapping)

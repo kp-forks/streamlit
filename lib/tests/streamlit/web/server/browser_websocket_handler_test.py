@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from unittest.mock import ANY, MagicMock, patch
 
 import tornado.httpserver
@@ -23,7 +25,6 @@ from streamlit.proto.BackMsg_pb2 import BackMsg
 from streamlit.proto.ForwardMsg_pb2 import ForwardMsg
 from streamlit.runtime import Runtime, SessionClientDisconnectedError
 from streamlit.web.server.server import BrowserWebSocketHandler
-from tests.isolated_asyncio_test_case import IsolatedAsyncioTestCase
 from tests.streamlit.web.server.server_test_case import ServerTestCase
 from tests.testutil import patch_config_options
 
@@ -63,7 +64,7 @@ class BrowserWebSocketHandlerTest(ServerTestCase):
 
     @tornado.testing.gen_test
     async def test_write_forward_msg_reraises_websocket_closed_error(self):
-        """`write_forward_msg` should re-raise WebSocketClosedError as
+        """`write_forward_msg` should re-raise WebSocketClosedError
         as SessionClientDisconnectedError.
         """
 

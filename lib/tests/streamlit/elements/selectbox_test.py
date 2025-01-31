@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,8 @@
 # limitations under the License.
 
 """selectbox unit tests."""
+
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -23,7 +25,13 @@ from parameterized import parameterized
 import streamlit as st
 from streamlit.errors import StreamlitAPIException
 from streamlit.proto.LabelVisibilityMessage_pb2 import LabelVisibilityMessage
+from streamlit.testing.v1.app_test import AppTest
+from streamlit.testing.v1.util import patch_config_options
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
+from tests.streamlit.data_test_cases import (
+    SHARED_TEST_CASES,
+    CaseMetadata,
+)
 
 
 class SelectboxTest(DeltaGeneratorTestCase):
@@ -40,7 +48,9 @@ class SelectboxTest(DeltaGeneratorTestCase):
             LabelVisibilityMessage.LabelVisibilityOptions.VISIBLE,
         )
         self.assertEqual(c.default, 0)
+        self.assertEqual(c.HasField("default"), True)
         self.assertEqual(c.disabled, False)
+        self.assertEqual(c.placeholder, "Choose an option")
 
     def test_just_disabled(self):
         """Test that it can be called with disabled param."""
@@ -57,6 +67,17 @@ class SelectboxTest(DeltaGeneratorTestCase):
         self.assertEqual(c.label, "the label")
         self.assertEqual(c.default, 1)
 
+    def test_none_index(self):
+        """Test that it can be called with None as index value."""
+        st.selectbox("the label", ("m", "f"), index=None)
+
+        c = self.get_delta_from_queue().new_element.selectbox
+        self.assertEqual(c.label, "the label")
+        # If a proto property is null is not determined by this value,
+        # but by the check via the HasField method:
+        self.assertEqual(c.default, 0)
+        self.assertEqual(c.HasField("default"), False)
+
     def test_noneType_option(self):
         """Test NoneType option value."""
         current_value = st.selectbox("the label", (None, "selected"), 0)
@@ -64,33 +85,18 @@ class SelectboxTest(DeltaGeneratorTestCase):
         self.assertEqual(current_value, None)
 
     @parameterized.expand(
-        [
-            (("m", "f"), ["m", "f"]),
-            (["male", "female"], ["male", "female"]),
-            (np.array(["m", "f"]), ["m", "f"]),
-            (pd.Series(np.array(["male", "female"])), ["male", "female"]),
-            (pd.DataFrame({"options": ["male", "female"]}), ["male", "female"]),
-            (
-                pd.DataFrame(
-                    data=[[1, 4, 7], [2, 5, 8], [3, 6, 9]], columns=["a", "b", "c"]
-                ).columns,
-                ["a", "b", "c"],
-            ),
-        ]
+        SHARED_TEST_CASES,
     )
-    def test_option_types(self, options, proto_options):
+    def test_option_types(self, name: str, input_data: Any, metadata: CaseMetadata):
         """Test that it supports different types of options."""
-        st.selectbox("the label", options)
+        st.selectbox("the label", input_data)
 
         c = self.get_delta_from_queue().new_element.selectbox
-        self.assertEqual(c.label, "the label")
-        self.assertEqual(c.default, 0)
-        self.assertEqual(c.options, proto_options)
-
-    def test_not_iterable_option_types(self):
-        """Test that it supports different types of options."""
-        with pytest.raises(TypeError):
-            st.selectbox("the label", 123)
+        assert c.label == "the label"
+        assert c.default == 0
+        assert {str(item) for item in c.options} == {
+            str(item) for item in metadata.expected_sequence
+        }
 
     def test_cast_options_to_string(self):
         """Test that it casts options to string."""
@@ -136,6 +142,16 @@ class SelectboxTest(DeltaGeneratorTestCase):
         with self.assertRaises(StreamlitAPIException):
             st.selectbox("the label", ("m", "f"), 2)
 
+    def test_raises_exception_of_index_larger_than_options(self):
+        """Test that it raises an exception if index is larger than options."""
+        with self.assertRaises(StreamlitAPIException) as ex:
+            st.selectbox("Test box", ["a"], index=1)
+
+        assert (
+            str(ex.exception)
+            == "Selectbox index must be greater than or equal to 0 and less than the length of options."
+        )
+
     def test_outside_form(self):
         """Test that form id is marshalled correctly outside of a form."""
 
@@ -180,3 +196,91 @@ class SelectboxTest(DeltaGeneratorTestCase):
             "Unsupported label_visibility option 'wrong_value'. Valid values are "
             "'visible', 'hidden' or 'collapsed'.",
         )
+
+    def test_placeholder(self):
+        """Test that it can be called with placeholder params."""
+        st.selectbox("the label", ("m", "f"), placeholder="Please select")
+
+        c = self.get_delta_from_queue().new_element.selectbox
+        self.assertEqual(c.placeholder, "Please select")
+
+    def test_shows_cached_widget_replay_warning(self):
+        """Test that a warning is shown when this widget is used inside a cached function."""
+        st.cache_data(lambda: st.selectbox("the label", ["Coffee", "Tea", "Water"]))()
+
+        # The widget itself is still created, so we need to go back one element more:
+        el = self.get_delta_from_queue(-2).new_element.exception
+        self.assertEqual(el.type, "CachedWidgetWarning")
+        self.assertTrue(el.is_warning)
+
+
+def test_selectbox_interaction():
+    """Test interactions with an empty selectbox widget."""
+
+    def script():
+        import streamlit as st
+
+        st.selectbox("the label", ("m", "f"), index=None)
+
+    at = AppTest.from_function(script).run()
+    selectbox = at.selectbox[0]
+    assert selectbox.value is None
+
+    # Select option m
+    at = selectbox.set_value("m").run()
+    selectbox = at.selectbox[0]
+    assert selectbox.value == "m"
+
+    # # Clear the value
+    at = selectbox.set_value(None).run()
+    selectbox = at.selectbox[0]
+    assert selectbox.value is None
+
+
+def test_selectbox_enum_coercion():
+    """Test E2E Enum Coercion on a selectbox."""
+
+    def script():
+        from enum import Enum
+
+        import streamlit as st
+
+        class EnumA(Enum):
+            A = 1
+            B = 2
+            C = 3
+
+        selected = st.selectbox("my_enum", EnumA, index=0)
+        st.text(id(selected.__class__))
+        st.text(id(EnumA))
+        st.text(selected in EnumA)
+
+    at = AppTest.from_function(script).run()
+
+    def test_enum():
+        selectbox = at.selectbox[0]
+        original_class = selectbox.value.__class__
+        selectbox.set_value(original_class.C).run()
+        assert at.text[0].value == at.text[1].value, "Enum Class ID not the same"
+        assert at.text[2].value == "True", "Not all enums found in class"
+
+    with patch_config_options({"runner.enumCoercion": "nameOnly"}):
+        test_enum()
+    with patch_config_options({"runner.enumCoercion": "off"}):
+        with pytest.raises(AssertionError):
+            test_enum()  # expect a failure with the config value off.
+
+
+def test_None_session_state_value_retained():
+    def script():
+        import streamlit as st
+
+        if "selectbox" not in st.session_state:
+            st.session_state["selectbox"] = None
+
+        st.selectbox("selectbox", ["a", "b", "c"], key="selectbox")
+        st.button("button")
+
+    at = AppTest.from_function(script).run()
+    at = at.button[0].click().run()
+    assert at.selectbox[0].value is None

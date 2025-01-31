@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,13 +17,15 @@
 from datetime import date, datetime, time, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 from parameterized import parameterized
 
 import streamlit as st
+from streamlit.elements.lib.js_number import JSNumber
 from streamlit.errors import StreamlitAPIException
-from streamlit.js_number import JSNumber
 from streamlit.proto.LabelVisibilityMessage_pb2 import LabelVisibilityMessage
+from streamlit.testing.v1.app_test import AppTest
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
 
 
@@ -69,6 +71,10 @@ class SliderTest(DeltaGeneratorTestCase):
             (0.5, [0.5], 0.5),  # float
             ((0.2, 0.5), [0.2, 0.5], (0.2, 0.5)),  # float tuple
             ([0.2, 0.5], [0.2, 0.5], (0.2, 0.5)),  # float list
+            (np.int64(1), [1], 1),  # numpy int
+            (np.int32(1), [1], 1),  # numpy int
+            (np.single(0.5), [0.5], 0.5),  # numpy float
+            (np.double(0.5), [0.5], 0.5),  # numpy float
             (AWARE_DT, [AWARE_DT_MICROS], AWARE_DT),  # datetime
             (
                 (AWARE_DT, AWARE_DT_END),  # datetime tuple
@@ -102,6 +108,34 @@ class SliderTest(DeltaGeneratorTestCase):
         c = self.get_delta_from_queue().new_element.slider
         self.assertEqual(c.label, "the label")
         self.assertEqual(c.default, proto_value)
+
+    @parameterized.expand(
+        [
+            "5",  # str
+            5j,  # complex
+            b"5",  # bytes
+        ]
+    )
+    def test_invalid_types(self, value):
+        """Test that it rejects invalid types, specifically things that are *almost* numbers"""
+        with pytest.raises(StreamlitAPIException):
+            st.slider("the label", value=value)
+
+    @parameterized.expand(
+        [
+            (1, 2, 1, 1),
+            (np.int64(1), 2, 1, 1),
+            (1, np.int64(2), 1, 1),
+            (1, 2, np.int64(1), 1),
+            (np.single(0.5), 1.5, 0.5, 0.5),
+        ]
+    )
+    def test_matching_types(self, min_value, max_value, value, return_value):
+        """Test that NumPy types are seen as compatible with numerical Python types"""
+        ret = st.slider(
+            "the label", min_value=min_value, max_value=max_value, value=value
+        )
+        self.assertEqual(ret, return_value)
 
     NAIVE_DT = datetime(2020, 2, 1)
     NAIVE_DT_END = datetime(2020, 2, 4)
@@ -163,9 +197,16 @@ class SliderTest(DeltaGeneratorTestCase):
         ret = st.slider("Slider label", 101, 100, 101)
         c = self.get_delta_from_queue().new_element.slider
 
-        self.assertEqual(ret, 101),
+        (self.assertEqual(ret, 101),)
         self.assertEqual(c.min, 100)
         self.assertEqual(c.max, 101)
+
+    def test_min_equals_max(self):
+        with pytest.raises(StreamlitAPIException):
+            st.slider("oh no", min_value=10, max_value=10)
+        with pytest.raises(StreamlitAPIException):
+            date = datetime(2024, 4, 3)
+            st.slider("datetime", min_value=date, max_value=date)
 
     def test_value_out_of_bounds(self):
         # Max int
@@ -267,3 +308,26 @@ class SliderTest(DeltaGeneratorTestCase):
             "Unsupported label_visibility option 'wrong_value'. Valid values are "
             "'visible', 'hidden' or 'collapsed'.",
         )
+
+    def test_shows_cached_widget_replay_warning(self):
+        """Test that a warning is shown when this widget is used inside a cached function."""
+        st.cache_data(lambda: st.slider("the label"))()
+
+        # The widget itself is still created, so we need to go back one element more:
+        el = self.get_delta_from_queue(-2).new_element.exception
+        self.assertEqual(el.type, "CachedWidgetWarning")
+        self.assertTrue(el.is_warning)
+
+
+def test_id_stability():
+    def script():
+        import streamlit as st
+
+        st.slider("slider", key="slider")
+
+    at = AppTest.from_function(script).run()
+    s1 = at.slider[0]
+    at = s1.set_value(5).run()
+    s2 = at.slider[0]
+
+    assert s1.id == s2.id
